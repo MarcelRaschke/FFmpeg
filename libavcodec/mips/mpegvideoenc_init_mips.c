@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2015 Manojkumar Bhosale (Manojkumar.Bhosale@imgtec.com)
+ *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -16,41 +18,16 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVUTIL_AARCH64_BSWAP_H
-#define AVUTIL_AARCH64_BSWAP_H
-
-#include <stdint.h>
-#include "config.h"
 #include "libavutil/attributes.h"
+#include "libavutil/mips/cpu.h"
+#include "libavcodec/mpegvideoenc.h"
+#include "mpegvideo_mips.h"
 
-#if HAVE_INLINE_ASM
-
-#define av_bswap16 av_bswap16
-static av_always_inline av_const unsigned av_bswap16(unsigned x)
+av_cold void ff_mpvenc_dct_init_mips(MpegEncContext *s)
 {
-    unsigned y;
+    int cpu_flags = av_get_cpu_flags();
 
-    __asm__("rev16 %w0, %w1" : "=r"(y) : "r"(x));
-    return y;
+    if (have_mmi(cpu_flags)) {
+        s->denoise_dct = ff_denoise_dct_mmi;
+    }
 }
-
-#define av_bswap32 av_bswap32
-static av_always_inline av_const uint32_t av_bswap32(uint32_t x)
-{
-    uint32_t y;
-
-    __asm__("rev %w0, %w1" : "=r"(y) : "r"(x));
-    return y;
-}
-
-#define av_bswap64 av_bswap64
-static av_always_inline av_const uint64_t av_bswap64(uint64_t x)
-{
-    uint64_t y;
-
-    __asm__("rev %0, %1" : "=r"(y) : "r"(x));
-    return y;
-}
-
-#endif /* HAVE_INLINE_ASM */
-#endif /* AVUTIL_AARCH64_BSWAP_H */

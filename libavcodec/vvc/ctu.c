@@ -713,8 +713,8 @@ static enum IntraPredMode luma_intra_pred_mode(VVCLocalContext* lc, const int in
         const int x_b           = (x0 + cu->cb_width - 1) >> sps->min_cb_log2_size_y;
         const int y_b           = (y0 - 1) >> sps->min_cb_log2_size_y;
         int min_cb_width        = fc->ps.pps->min_cb_width;
-        int x0b                 = av_mod_uintp2(x0, sps->ctb_log2_size_y);
-        int y0b                 = av_mod_uintp2(y0, sps->ctb_log2_size_y);
+        int x0b                 = av_zero_extend(x0, sps->ctb_log2_size_y);
+        int y0b                 = av_zero_extend(y0, sps->ctb_log2_size_y);
         const int available_l   = lc->ctb_left_flag || x0b;
         const int available_u   = lc->ctb_up_flag || y0b;
 
@@ -1444,20 +1444,25 @@ static void merge_data_block(VVCLocalContext *lc)
     }
 }
 
-static void merge_data_ibc(VVCLocalContext *lc)
+static int merge_data_ibc(VVCLocalContext *lc)
 {
     const VVCFrameContext* fc = lc->fc;
     const VVCSPS* sps         = fc->ps.sps;
     MotionInfo *mi            = &lc->cu->pu.mi;
     int merge_idx             = 0;
+    int ret;
 
     mi->pred_flag = PF_IBC;
 
     if (sps->max_num_ibc_merge_cand > 1)
         merge_idx = ff_vvc_merge_idx(lc);
 
-    ff_vvc_luma_mv_merge_ibc(lc, merge_idx, &mi->mv[L0][0]);
+    ret = ff_vvc_luma_mv_merge_ibc(lc, merge_idx, &mi->mv[L0][0]);
+    if (ret)
+        return ret;
     ff_vvc_store_mv(lc, mi);
+
+    return 0;
 }
 
 static int hls_merge_data(VVCLocalContext *lc)
@@ -1466,11 +1471,14 @@ static int hls_merge_data(VVCLocalContext *lc)
     const VVCPH  *ph            = &fc->ps.ph;
     const CodingUnit *cu        = lc->cu;
     PredictionUnit *pu          = &lc->cu->pu;
+    int ret;
 
     pu->merge_gpm_flag = 0;
     pu->mi.num_sb_x = pu->mi.num_sb_y = 1;
     if (cu->pred_mode == MODE_IBC) {
-        merge_data_ibc(lc);
+        ret = merge_data_ibc(lc);
+        if (ret)
+            return ret;
     } else {
         if (ph->max_num_subblock_merge_cand > 0 && cu->cb_width >= 8 && cu->cb_height >= 8)
             pu->merge_subblock_flag = ff_vvc_merge_subblock_flag(lc);
@@ -1596,6 +1604,7 @@ static int mvp_data_ibc(VVCLocalContext *lc)
     int mvp_l0_flag           = 0;
     int amvr_shift            = 4;
     Mv *mv                    = &mi->mv[L0][0];
+    int ret;
 
     mi->pred_flag = PF_IBC;
     mi->num_sb_x  = 1;
@@ -1607,7 +1616,9 @@ static int mvp_data_ibc(VVCLocalContext *lc)
     if (sps->r->sps_amvr_enabled_flag && (mv->x || mv->y))
         amvr_shift = ff_vvc_amvr_shift(lc, pu->inter_affine_flag, cu->pred_mode, 1);
 
-    ff_vvc_mvp_ibc(lc, mvp_l0_flag, amvr_shift, mv);
+    ret = ff_vvc_mvp_ibc(lc, mvp_l0_flag, amvr_shift, mv);
+    if (ret)
+        return ret;
     ff_vvc_store_mv(lc, mi);
 
     return 0;
@@ -2508,8 +2519,8 @@ void ff_vvc_set_neighbour_available(VVCLocalContext *lc,
     const int x0, const int y0, const int w, const int h)
 {
     const int log2_ctb_size = lc->fc->ps.sps->ctb_log2_size_y;
-    const int x0b = av_mod_uintp2(x0, log2_ctb_size);
-    const int y0b = av_mod_uintp2(y0, log2_ctb_size);
+    const int x0b = av_zero_extend(x0, log2_ctb_size);
+    const int y0b = av_zero_extend(y0, log2_ctb_size);
 
     lc->na.cand_up       = (lc->ctb_up_flag   || y0b);
     lc->na.cand_left     = (lc->ctb_left_flag || x0b);

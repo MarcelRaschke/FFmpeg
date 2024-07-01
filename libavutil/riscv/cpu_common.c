@@ -1,4 +1,6 @@
 /*
+ * Copyright © 2024 Rémi Denis-Courmont.
+ *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -16,33 +18,16 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/**
- * @file
- * byte swapping routines
- */
+#include "libavutil/cpu.h"
 
-#ifndef AVUTIL_SH4_BSWAP_H
-#define AVUTIL_SH4_BSWAP_H
+#ifndef __riscv_zbb
+unsigned char ff_rv_zbb_supported = 0;
 
-#include <stdint.h>
-#include "config.h"
-#include "libavutil/attributes.h"
-
-#define av_bswap16 av_bswap16
-static av_always_inline av_const uint16_t av_bswap16(uint16_t x)
+#ifdef __ELF__
+__attribute__((constructor))
+static void probe_zbb(void)
 {
-    __asm__("swap.b %0,%0" : "+r"(x));
-    return x;
+    ff_rv_zbb_supported = (av_get_cpu_flags() & AV_CPU_FLAG_RVB_BASIC) != 0;
 }
-
-#define av_bswap32 av_bswap32
-static av_always_inline av_const uint32_t av_bswap32(uint32_t x)
-{
-    __asm__("swap.b %0,%0\n"
-            "swap.w %0,%0\n"
-            "swap.b %0,%0\n"
-            : "+r"(x));
-    return x;
-}
-
-#endif /* AVUTIL_SH4_BSWAP_H */
+#endif
+#endif

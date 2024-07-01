@@ -41,8 +41,10 @@ FATE_CHECKASM = fate-checkasm-aacencdsp                                 \
                 fate-checkasm-svq1enc                                   \
                 fate-checkasm-synth_filter                              \
                 fate-checkasm-sw_gbrp                                   \
+                fate-checkasm-sw_range_convert                          \
                 fate-checkasm-sw_rgb                                    \
                 fate-checkasm-sw_scale                                  \
+                fate-checkasm-sw_yuv2rgb                                \
                 fate-checkasm-takdsp                                    \
                 fate-checkasm-utvideodsp                                \
                 fate-checkasm-v210dec                                   \

@@ -739,7 +739,7 @@ static int new_stream_video(Muxer *mux, const OptionsContext *o,
                      ost->logfile_prefix ? ost->logfile_prefix :
                                            DEFAULT_PASS_LOGFILENAME_PREFIX,
                      ost_idx);
-            if (!strcmp(ost->enc_ctx->codec->name, "libx264")) {
+            if (!strcmp(ost->enc_ctx->codec->name, "libx264") || !strcmp(ost->enc_ctx->codec->name, "libvvenc")) {
                 av_dict_set(&ost->encoder_opts, "stats", logfilename, AV_DICT_DONT_OVERWRITE);
             } else {
                 if (video_enc->flags & AV_CODEC_FLAG_PASS2) {
@@ -3022,9 +3022,13 @@ static int parse_forced_key_frames(void *log, KeyframeForceCtx *kf,
             unsigned int    nb_ch = mux->fc->nb_chapters;
             int j;
 
-            if (nb_ch > INT_MAX - size ||
-                !(pts = av_realloc_f(pts, size += nb_ch - 1,
-                                     sizeof(*pts))))
+            if (nb_ch > INT_MAX - size) {
+                ret = AVERROR(ERANGE);
+                goto fail;
+            }
+            size += nb_ch - 1;
+            pts = av_realloc_f(pts, size, sizeof(*pts));
+            if (!pts)
                 return AVERROR(ENOMEM);
 
             if (p[8]) {
@@ -3142,6 +3146,7 @@ static int validate_enc_avopt(Muxer *mux, const AVDictionary *codec_avopt)
         if (!(option->flags & AV_OPT_FLAG_ENCODING_PARAM)) {
             av_log(mux, AV_LOG_ERROR, "Codec AVOption %s (%s) is not an "
                    "encoding option.\n", e->key, option->help ? option->help : "");
+            av_dict_free(&unused_opts);
             return AVERROR(EINVAL);
         }
 

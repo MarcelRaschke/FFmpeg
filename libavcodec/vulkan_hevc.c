@@ -374,7 +374,7 @@ static void set_sps(const HEVCSPS *sps, int sps_idx,
         /* NOTE: This is the predicted, and *reordered* version.
          * Probably incorrect, but the spec doesn't say which version to use. */
         str[i].used_by_curr_pic_flag = st_rps->used;
-        str[i].used_by_curr_pic_s0_flag = av_mod_uintp2(st_rps->used, str[i].num_negative_pics);
+        str[i].used_by_curr_pic_s0_flag = av_zero_extend(st_rps->used, str[i].num_negative_pics);
         str[i].used_by_curr_pic_s1_flag = st_rps->used >> str[i].num_negative_pics;
 
         for (int j = 0; j < str[i].num_negative_pics; j++)
@@ -735,8 +735,8 @@ static int vk_hevc_start_frame(AVCodecContext          *avctx,
     FFVulkanDecodeContext *dec = avctx->internal->hwaccel_priv_data;
     HEVCVulkanDecodePicture *hp = pic->hwaccel_picture_private;
     FFVulkanDecodePicture *vp = &hp->vp;
-    const HEVCSPS *sps = h->ps.sps;
-    const HEVCPPS *pps = h->ps.pps;
+    const HEVCPPS *pps = h->pps;
+    const HEVCSPS *sps = pps->sps;
     int nb_refs = 0;
 
     if (!dec->session_params) {
@@ -878,8 +878,8 @@ static int vk_hevc_end_frame(AVCodecContext *avctx)
         return 0;
 
     if (!dec->session_params) {
-        const HEVCSPS *sps = h->ps.sps;
-        const HEVCPPS *pps = h->ps.pps;
+        const HEVCPPS *pps = h->pps;
+        const HEVCSPS *sps = pps->sps;
 
         if (!pps) {
             unsigned int pps_id = h->sh.pps_id;

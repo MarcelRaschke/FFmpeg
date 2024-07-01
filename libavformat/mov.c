@@ -3386,15 +3386,15 @@ static int mov_read_stts(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             sc->stts_data[i].duration = 1;
             corrected_dts += (delta_magnitude < 0 ? (int64_t)delta_magnitude : 1) * sample_count;
         } else {
-            corrected_dts += sample_duration * sample_count;
+            corrected_dts += sample_duration * (int64_t)sample_count;
         }
 
-        current_dts += sc->stts_data[i].duration * sample_count;
+        current_dts += sc->stts_data[i].duration * (int64_t)sample_count;
 
         if (current_dts > corrected_dts) {
             int64_t drift = (current_dts - corrected_dts)/FFMAX(sample_count, 1);
             uint32_t correction = (sc->stts_data[i].duration > drift) ? drift : sc->stts_data[i].duration - 1;
-            current_dts -= correction * sample_count;
+            current_dts -= correction * (uint64_t)sample_count;
             sc->stts_data[i].duration -= correction;
         }
 
@@ -6138,7 +6138,7 @@ static int mov_read_smdm(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
     avio_skip(pb, 3); /* flags */
 
-    sc->mastering = av_mastering_display_metadata_alloc();
+    sc->mastering = av_mastering_display_metadata_alloc_size(&sc->mastering_size);
     if (!sc->mastering)
         return AVERROR(ENOMEM);
 
@@ -6181,7 +6181,7 @@ static int mov_read_mdcv(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return 0;
     }
 
-    sc->mastering = av_mastering_display_metadata_alloc();
+    sc->mastering = av_mastering_display_metadata_alloc_size(&sc->mastering_size);
     if (!sc->mastering)
         return AVERROR(ENOMEM);
 
@@ -6332,7 +6332,7 @@ static int mov_read_st3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return 0;
     }
 
-    sc->stereo3d = av_stereo3d_alloc();
+    sc->stereo3d = av_stereo3d_alloc_size(&sc->stereo3d_size);
     if (!sc->stereo3d)
         return AVERROR(ENOMEM);
 
@@ -6477,6 +6477,325 @@ static int mov_read_sv3d(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     return 0;
 }
 
+static int mov_read_vexu_proj(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    AVStream *st;
+    MOVStreamContext *sc;
+    int size;
+    uint32_t tag;
+    enum AVSphericalProjection projection;
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+
+    st = c->fc->streams[c->fc->nb_streams - 1];
+    sc = st->priv_data;
+
+    if (atom.size != 16) {
+        av_log(c->fc, AV_LOG_ERROR, "Invalid size for proj box: %"PRIu64"\n", atom.size);
+        return AVERROR_INVALIDDATA;
+    }
+
+    size = avio_rb32(pb);
+    if (size != 16) {
+        av_log(c->fc, AV_LOG_ERROR, "Invalid size for prji box: %d\n", size);
+        return AVERROR_INVALIDDATA;
+    }
+
+    tag = avio_rl32(pb);
+    if (tag != MKTAG('p','r','j','i')) {
+        av_log(c->fc, AV_LOG_ERROR, "Invalid child box of proj box: 0x%08X\n", tag);
+        return AVERROR_INVALIDDATA;
+    }
+
+    avio_skip(pb, 1); // version
+    avio_skip(pb, 3); // flags
+
+    tag = avio_rl32(pb);
+    switch (tag) {
+    case MKTAG('r','e','c','t'):
+        projection = AV_SPHERICAL_RECTILINEAR;
+        break;
+    case MKTAG('e','q','u','i'):
+        projection = AV_SPHERICAL_EQUIRECTANGULAR;
+        break;
+    case MKTAG('h','e','q','u'):
+        projection = AV_SPHERICAL_HALF_EQUIRECTANGULAR;
+        break;
+    case MKTAG('f','i','s','h'):
+        projection = AV_SPHERICAL_FISHEYE;
+        break;
+    default:
+        av_log(c->fc, AV_LOG_ERROR, "Invalid projection type in prji box: 0x%08X\n", tag);
+        return AVERROR_INVALIDDATA;
+    }
+
+    sc->spherical = av_spherical_alloc(&sc->spherical_size);
+    if (!sc->spherical)
+        return AVERROR(ENOMEM);
+
+    sc->spherical->projection = projection;
+
+    return 0;
+}
+
+static int mov_read_eyes(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    AVStream *st;
+    MOVStreamContext *sc;
+    int size, flags = 0;
+    int64_t remaining;
+    uint32_t tag, baseline = 0;
+    enum AVStereo3DView view = AV_STEREO3D_VIEW_UNSPEC;
+    enum AVStereo3DType type = AV_STEREO3D_2D;
+    enum AVStereo3DPrimaryEye primary_eye = AV_PRIMARY_EYE_NONE;
+    AVRational horizontal_disparity_adjustment = { 0, 1 };
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+
+    st = c->fc->streams[c->fc->nb_streams - 1];
+    sc = st->priv_data;
+
+    remaining = atom.size;
+    while (remaining > 0) {
+        size = avio_rb32(pb);
+        if (size < 8 || size > remaining ) {
+            av_log(c->fc, AV_LOG_ERROR, "Invalid child size in eyes box\n");
+            return AVERROR_INVALIDDATA;
+        }
+
+        tag = avio_rl32(pb);
+        switch (tag) {
+        case MKTAG('s','t','r','i'): {
+            int has_right, has_left;
+            uint8_t tmp;
+            if (size != 13) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of stri box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+            avio_skip(pb, 1); // version
+            avio_skip(pb, 3); // flags
+
+            tmp = avio_r8(pb);
+
+            // eye_views_reversed
+            if (tmp & 8) {
+                flags |= AV_STEREO3D_FLAG_INVERT;
+            }
+            // has_additional_views
+            if (tmp & 4) {
+                // skip...
+            }
+
+            has_right = tmp & 2; // has_right_eye_view
+            has_left = tmp & 1; // has_left_eye_view
+
+            if (has_left && has_right)
+                view = AV_STEREO3D_VIEW_PACKED;
+            else if (has_left)
+                view = AV_STEREO3D_VIEW_LEFT;
+            else if (has_right)
+                view = AV_STEREO3D_VIEW_RIGHT;
+            if (has_left || has_right)
+                type = AV_STEREO3D_UNSPEC;
+
+            break;
+        }
+        case MKTAG('h','e','r','o'): {
+            int tmp;
+            if (size != 13) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of hero box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+            avio_skip(pb, 1); // version
+            avio_skip(pb, 3); // flags
+
+            tmp = avio_r8(pb);
+            if (tmp == 0)
+                primary_eye = AV_PRIMARY_EYE_NONE;
+            else if (tmp == 1)
+                primary_eye = AV_PRIMARY_EYE_LEFT;
+            else if (tmp == 2)
+                primary_eye = AV_PRIMARY_EYE_RIGHT;
+            else
+                av_log(c->fc, AV_LOG_WARNING, "Unknown hero eye type: %d\n", tmp);
+
+            break;
+        }
+        case MKTAG('c','a','m','s'): {
+            uint32_t subtag;
+            int subsize;
+            if (size != 24) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of cams box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+
+            subsize = avio_rb32(pb);
+            if (subsize != 16) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of blin box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+
+            subtag = avio_rl32(pb);
+            if (subtag != MKTAG('b','l','i','n')) {
+                av_log(c->fc, AV_LOG_ERROR, "Expected blin box, got 0x%08X\n", subtag);
+                return AVERROR_INVALIDDATA;
+            }
+
+            avio_skip(pb, 1); // version
+            avio_skip(pb, 3); // flags
+
+            baseline = avio_rb32(pb);
+
+            break;
+        }
+        case MKTAG('c','m','f','y'): {
+            uint32_t subtag;
+            int subsize;
+            int32_t adjustment;
+            if (size != 24) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of cmfy box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+
+            subsize = avio_rb32(pb);
+            if (subsize != 16) {
+                av_log(c->fc, AV_LOG_ERROR, "Invalid size of dadj box: %d\n", size);
+                return AVERROR_INVALIDDATA;
+            }
+
+            subtag = avio_rl32(pb);
+            if (subtag != MKTAG('d','a','d','j')) {
+                av_log(c->fc, AV_LOG_ERROR, "Expected dadj box, got 0x%08X\n", subtag);
+                return AVERROR_INVALIDDATA;
+            }
+
+            avio_skip(pb, 1); // version
+            avio_skip(pb, 3); // flags
+
+            adjustment = (int32_t) avio_rb32(pb);
+
+            horizontal_disparity_adjustment.num = (int) adjustment;
+            horizontal_disparity_adjustment.den = 10000;
+
+            break;
+        }
+        default:
+            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in eyes: 0x%08X\n", tag);
+            avio_skip(pb, size - 8);
+            break;
+        }
+        remaining -= size;
+    }
+
+    if (remaining != 0) {
+        av_log(c->fc, AV_LOG_ERROR, "Broken eyes box\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    if (type == AV_STEREO3D_2D)
+        return 0;
+
+    if (!sc->stereo3d) {
+        sc->stereo3d = av_stereo3d_alloc_size(&sc->stereo3d_size);
+        if (!sc->stereo3d)
+            return AVERROR(ENOMEM);
+    }
+
+    sc->stereo3d->flags                           = flags;
+    sc->stereo3d->type                            = type;
+    sc->stereo3d->view                            = view;
+    sc->stereo3d->primary_eye                     = primary_eye;
+    sc->stereo3d->baseline                        = baseline;
+    sc->stereo3d->horizontal_disparity_adjustment = horizontal_disparity_adjustment;
+
+    return 0;
+}
+
+static int mov_read_vexu(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    int size;
+    int64_t remaining;
+    uint32_t tag;
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+
+    if (atom.size < 8) {
+        av_log(c->fc, AV_LOG_ERROR, "Empty video extension usage box\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    remaining = atom.size;
+    while (remaining > 0) {
+        size = avio_rb32(pb);
+        if (size < 8 || size > remaining ) {
+            av_log(c->fc, AV_LOG_ERROR, "Invalid child size in vexu box\n");
+            return AVERROR_INVALIDDATA;
+        }
+
+        tag = avio_rl32(pb);
+        switch (tag) {
+        case MKTAG('p','r','o','j'): {
+            MOVAtom proj = { tag, size - 8 };
+            int ret = mov_read_vexu_proj(c, pb, proj);
+            if (ret < 0)
+                return ret;
+            break;
+        }
+        case MKTAG('e','y','e','s'): {
+            MOVAtom eyes = { tag, size - 8 };
+            int ret = mov_read_eyes(c, pb, eyes);
+            if (ret < 0)
+                return ret;
+            break;
+        }
+        default:
+            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in vexu: 0x%08X\n", tag);
+            avio_skip(pb, size - 8);
+            break;
+        }
+        remaining -= size;
+    }
+
+    if (remaining != 0) {
+        av_log(c->fc, AV_LOG_ERROR, "Broken vexu box\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    return 0;
+}
+
+static int mov_read_hfov(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    AVStream *st;
+    MOVStreamContext *sc;
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+
+    st = c->fc->streams[c->fc->nb_streams - 1];
+    sc = st->priv_data;
+
+    if (atom.size != 4) {
+         av_log(c->fc, AV_LOG_ERROR, "Invalid size of hfov box: %"PRIu64"\n", atom.size);
+         return AVERROR_INVALIDDATA;
+    }
+
+
+    if (!sc->stereo3d) {
+        sc->stereo3d = av_stereo3d_alloc_size(&sc->stereo3d_size);
+        if (!sc->stereo3d)
+            return AVERROR(ENOMEM);
+    }
+
+    sc->stereo3d->horizontal_field_of_view.num = avio_rb32(pb);
+    sc->stereo3d->horizontal_field_of_view.den = 1000; // thousands of a degree
+
+    return 0;
+}
+
 static int mov_parse_uuid_spherical(MOVStreamContext *sc, AVIOContext *pb, size_t len)
 {
     int ret = 0;
@@ -6516,7 +6835,7 @@ static int mov_parse_uuid_spherical(MOVStreamContext *sc, AVIOContext *pb, size_
             else
                 mode = AV_STEREO3D_2D;
 
-            sc->stereo3d = av_stereo3d_alloc();
+            sc->stereo3d = av_stereo3d_alloc_size(&sc->stereo3d_size);
             if (!sc->stereo3d)
                 goto out;
 
@@ -8595,6 +8914,8 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('d','f','L','a'), mov_read_dfla },
 { MKTAG('s','t','3','d'), mov_read_st3d }, /* stereoscopic 3D video box */
 { MKTAG('s','v','3','d'), mov_read_sv3d }, /* spherical video box */
+{ MKTAG('v','e','x','u'), mov_read_vexu }, /* video extension usage */
+{ MKTAG('h','f','o','v'), mov_read_hfov },
 { MKTAG('d','O','p','s'), mov_read_dops },
 { MKTAG('d','m','l','p'), mov_read_dmlp },
 { MKTAG('S','m','D','m'), mov_read_smdm },
@@ -9715,7 +10036,7 @@ static int mov_read_header(AVFormatContext *s)
             if (sc->stereo3d) {
                 if (!av_packet_side_data_add(&st->codecpar->coded_side_data, &st->codecpar->nb_coded_side_data,
                                              AV_PKT_DATA_STEREO3D,
-                                             (uint8_t *)sc->stereo3d, sizeof(*sc->stereo3d), 0))
+                                             (uint8_t *)sc->stereo3d, sc->stereo3d_size, 0))
                     return AVERROR(ENOMEM);
 
                 sc->stereo3d = NULL;
@@ -9731,7 +10052,7 @@ static int mov_read_header(AVFormatContext *s)
             if (sc->mastering) {
                 if (!av_packet_side_data_add(&st->codecpar->coded_side_data, &st->codecpar->nb_coded_side_data,
                                              AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
-                                             (uint8_t *)sc->mastering, sizeof(*sc->mastering), 0))
+                                             (uint8_t *)sc->mastering, sc->mastering_size, 0))
                     return AVERROR(ENOMEM);
 
                 sc->mastering = NULL;

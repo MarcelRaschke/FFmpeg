@@ -1046,7 +1046,6 @@ static int decode_audio_specific_config_gb(AACDecContext *ac,
             return ret;
         break;
 #if CONFIG_AAC_DECODER
-    case AOT_USAC_NOSBR: /* fallthrough */
     case AOT_USAC:
         if ((ret = ff_aac_usac_config_decode(ac, avctx, gb,
                                              oc, m4ac->chan_config)) < 0)
@@ -1094,22 +1093,6 @@ static int decode_audio_specific_config(AACDecContext *ac,
 
     return decode_audio_specific_config_gb(ac, avctx, oc, &gb, 0,
                                            sync_extension);
-}
-
-static int sample_rate_idx (int rate)
-{
-         if (92017 <= rate) return 0;
-    else if (75132 <= rate) return 1;
-    else if (55426 <= rate) return 2;
-    else if (46009 <= rate) return 3;
-    else if (37566 <= rate) return 4;
-    else if (27713 <= rate) return 5;
-    else if (23004 <= rate) return 6;
-    else if (18783 <= rate) return 7;
-    else if (13856 <= rate) return 8;
-    else if (11502 <= rate) return 9;
-    else if (9391  <= rate) return 10;
-    else                    return 11;
 }
 
 static av_cold int decode_close(AVCodecContext *avctx)
@@ -1212,7 +1195,7 @@ av_cold int ff_aac_decode_init(AVCodecContext *avctx)
         uint8_t layout_map[MAX_ELEM_ID*4][3];
         int layout_map_tags;
 
-        sr = sample_rate_idx(avctx->sample_rate);
+        sr = ff_aac_sample_rate_idx(avctx->sample_rate);
         ac->oc[1].m4ac.sampling_index = sr;
         ac->oc[1].m4ac.channels = avctx->ch_layout.nb_channels;
         ac->oc[1].m4ac.sbr = -1;
@@ -1335,6 +1318,7 @@ static int decode_ics_info(AACDecContext *ac, IndividualChannelStream *ics,
         ics->use_kb_window[1]   = ics->use_kb_window[0];
         ics->use_kb_window[0]   = get_bits1(gb);
     }
+    ics->prev_num_window_groups = FFMAX(ics->num_window_groups, 1);
     ics->num_window_groups  = 1;
     ics->group_len[0]       = 1;
     if (ics->window_sequence[0] == EIGHT_SHORT_SEQUENCE) {
@@ -1571,8 +1555,7 @@ int ff_aac_decode_tns(AACDecContext *ac, TemporalNoiseShaping *tns,
                       GetBitContext *gb, const IndividualChannelStream *ics)
 {
     int tns_max_order = INT32_MAX;
-    const int is_usac = ac->oc[1].m4ac.object_type == AOT_USAC ||
-                        ac->oc[1].m4ac.object_type == AOT_USAC_NOSBR;
+    const int is_usac = ac->oc[1].m4ac.object_type == AOT_USAC;
     int w, filt, i, coef_len, coef_res, coef_compress;
     const int is8 = ics->window_sequence[0] == EIGHT_SHORT_SEQUENCE;
 
@@ -2421,8 +2404,7 @@ static int aac_decode_frame_int(AVCodecContext *avctx, AVFrame *frame,
 
     ac->tags_mapped = 0;
 
-    if ((ac->oc[1].m4ac.object_type == AOT_USAC) ||
-        (ac->oc[1].m4ac.object_type == AOT_USAC_NOSBR)) {
+    if (ac->oc[1].m4ac.object_type == AOT_USAC) {
         if (ac->is_fixed) {
             avpriv_report_missing_feature(ac->avctx,
                                           "AAC USAC fixed-point decoding");

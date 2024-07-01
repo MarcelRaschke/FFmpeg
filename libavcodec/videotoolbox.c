@@ -233,9 +233,9 @@ CFDataRef ff_videotoolbox_hvcc_extradata_create(AVCodecContext *avctx)
 {
     HEVCContext *h = avctx->priv_data;
     int i, num_vps = 0, num_sps = 0, num_pps = 0;
-    const HEVCVPS *vps = h->ps.vps;
-    const HEVCSPS *sps = h->ps.sps;
-    const HEVCPPS *pps = h->ps.pps;
+    const HEVCPPS *pps = h->pps;
+    const HEVCSPS *sps = pps->sps;
+    const HEVCVPS *vps = sps->vps;
     PTLCommon ptlc = vps->ptl.general_ptl;
     VUI vui = sps->vui;
     uint8_t parallelismType;
@@ -1108,7 +1108,7 @@ static int videotoolbox_mpeg_decode_slice(AVCodecContext *avctx,
 static int videotoolbox_mpeg_end_frame(AVCodecContext *avctx)
 {
     MpegEncContext *s = avctx->priv_data;
-    AVFrame *frame = s->current_picture_ptr->f;
+    AVFrame *frame = s->cur_pic.ptr->f;
 
     return ff_videotoolbox_common_end_frame(avctx, frame);
 }
