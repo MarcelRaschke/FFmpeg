@@ -38,15 +38,15 @@ static int opus_decoder_config(IAMFCodecConfig *codec_config,
 {
     int left = len - avio_tell(pb);
 
-    if (left < 11)
+    if (left < 11 || codec_config->audio_roll_distance >= 0)
         return AVERROR_INVALIDDATA;
 
     codec_config->extradata = av_malloc(left + 8);
     if (!codec_config->extradata)
         return AVERROR(ENOMEM);
 
-    AV_WB32(codec_config->extradata, MKBETAG('O','p','u','s'));
-    AV_WB32(codec_config->extradata + 4, MKBETAG('H','e','a','d'));
+    AV_WB32A(codec_config->extradata,     MKBETAG('O','p','u','s'));
+    AV_WB32A(codec_config->extradata + 4, MKBETAG('H','e','a','d'));
     codec_config->extradata_size = avio_read(pb, codec_config->extradata + 8, left);
     if (codec_config->extradata_size < left)
         return AVERROR_INVALIDDATA;
@@ -63,6 +63,9 @@ static int aac_decoder_config(IAMFCodecConfig *codec_config,
     MPEG4AudioConfig cfg = { 0 };
     int object_type_id, codec_id, stream_type;
     int ret, tag, left;
+
+    if (codec_config->audio_roll_distance >= 0)
+        return AVERROR_INVALIDDATA;
 
     tag = avio_r8(pb);
     if (tag != MP4DecConfigDescrTag)
@@ -118,6 +121,9 @@ static int flac_decoder_config(IAMFCodecConfig *codec_config,
 {
     int left;
 
+    if (codec_config->audio_roll_distance)
+        return AVERROR_INVALIDDATA;
+
     avio_skip(pb, 4); // METADATA_BLOCK_HEADER
 
     left = len - avio_tell(pb);
@@ -146,7 +152,7 @@ static int ipcm_decoder_config(IAMFCodecConfig *codec_config,
     };
     int sample_format = avio_r8(pb); // 0 = BE, 1 = LE
     int sample_size = (avio_r8(pb) / 8 - 2); // 16, 24, 32
-    if (sample_format > 1 || sample_size > 2)
+    if (sample_format > 1 || sample_size > 2U || codec_config->audio_roll_distance)
         return AVERROR_INVALIDDATA;
 
     codec_config->codec_id = sample_fmt[sample_format][sample_size];
@@ -246,6 +252,12 @@ static int codec_config_obu(void *s, IAMFContext *c, AVIOContext *pb, int len)
     if (ret < 0)
         goto fail;
 
+    if ((codec_config->nb_samples > INT_MAX) || codec_config->nb_samples <= 0 ||
+        (-codec_config->audio_roll_distance > INT_MAX / codec_config->nb_samples)) {
+        ret = AVERROR_INVALIDDATA;
+        goto fail;
+    }
+
     c->codec_configs[c->nb_codec_configs++] = codec_config;
 
     len -= avio_tell(pbc);
@@ -271,10 +283,10 @@ static int update_extradata(AVCodecParameters *codecpar)
 
     switch(codecpar->codec_id) {
     case AV_CODEC_ID_OPUS:
-        AV_WB8(codecpar->extradata + 9, codecpar->ch_layout.nb_channels);
-        AV_WL16(codecpar->extradata + 10, AV_RB16(codecpar->extradata + 10)); // Byte swap pre-skip
-        AV_WL32(codecpar->extradata + 12, AV_RB32(codecpar->extradata + 12)); // Byte swap sample rate
-        AV_WL16(codecpar->extradata + 16, AV_RB16(codecpar->extradata + 16)); // Byte swap Output Gain
+        AV_WB8(codecpar->extradata   + 9,  codecpar->ch_layout.nb_channels);
+        AV_WL16A(codecpar->extradata + 10, AV_RB16A(codecpar->extradata + 10)); // Byte swap pre-skip
+        AV_WL32A(codecpar->extradata + 12, AV_RB32A(codecpar->extradata + 12)); // Byte swap sample rate
+        AV_WL16A(codecpar->extradata + 16, AV_RB16A(codecpar->extradata + 16)); // Byte swap Output Gain
         break;
     case AV_CODEC_ID_AAC: {
         uint8_t buf[5];
